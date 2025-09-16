@@ -1,4 +1,4 @@
-# 🕵️ DevAgent - AI Repository Analysis
+# 🕵️ DevAgent - Demystify your codebase,Use this tool
 
 **Built for TiDB AgentX Hackathon 2025: Forge Agentic AI for Real-World Impact**
 
