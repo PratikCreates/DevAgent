@@ -1,0 +1,12 @@
+modal
+fastapi
+streamlit
+pandas
+python-dotenv
+requests
+sqlalchemy
+sentence-transformers
+openai
+pydantic
+uvicorn
+mysql-connector-python
