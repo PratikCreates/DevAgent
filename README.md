@@ -1,4 +1,4 @@
-# 🕵️ DevAgent - Demystify your codebase,Use this tool
+# 🕵️ DevAgent - Demystify any codebase you like
 
 **Built for TiDB AgentX Hackathon 2025: Forge Agentic AI for Real-World Impact**
 
