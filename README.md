@@ -10,7 +10,7 @@ DevAgent combines TiDB's distributed vector database for lightning-fast semantic
 
 ## Prerequisites
 - **TiDB Account** – free tier available at [tidbcloud.com](https://tidbcloud.com)  
-- **Kimi API Key** – get yours at [moonshot.cn](https://moonshot.cn)  
+- **Kimi API Key** – get yours at [moonshot.cn](https://www.moonshot.ai/)  
 - **Modal Account** – serverless compute at [modal.com](https://modal.com)  
 
 ## Installation & Deployment
