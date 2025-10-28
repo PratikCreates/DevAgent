@@ -10,3 +10,4 @@ openai
 pydantic
 uvicorn
 mysql-connector-python
+huggingface-hub

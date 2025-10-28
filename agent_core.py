@@ -1,5 +1,4 @@
 # agent_core.py - DevAgent Backend with Kimi Web Search Integration
-import modal
 import os
 import shutil
 import requests
@@ -13,26 +12,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI
 import time
 import re
-
-
-# --- Configuration and Setup ---
-image = (
-    modal.Image.debian_slim()
-    .apt_install("git")
-    .pip_install_from_requirements("requirements.txt")
-)
-
-app = modal.App(
-    name="dev-agent-p",
-    image=image,
-    secrets=[
-        modal.Secret.from_name("tidb-secret"),
-        modal.Secret.from_name("kimi-secret"),
-    ]
-)
-
-repo_volume = modal.Volume.from_name("dev-agent-repo-cache", create_if_missing=True)
-model_cache_volume = modal.Volume.from_name("dev-agent-model-cache", create_if_missing=True)
+import uvicorn
 
 
 # --- Utility Functions ---
@@ -46,12 +26,43 @@ def normalize_question_backend(question: str) -> str:
 class LLMService:
     def __init__(self):
         from openai import OpenAI
-        self.client = OpenAI(
-            api_key=os.environ.get("KIMI_API_KEY"),
-            base_url="https://api.moonshot.ai/v1"
-        )
+        from huggingface_hub import InferenceClient
 
-    def generate_response(self, prompt: str, system_prompt: str, model: str = "moonshot-v1-8k", json_mode: bool = False, max_tokens: int = None):
+        self.llm_provider = os.environ.get("LLM_PROVIDER", "kimi")
+        self.model = os.environ.get("LLM_MODEL", "moonshot-v1-8k")
+
+        if self.llm_provider == "openrouter":
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            base_url = "https://openrouter.ai/api/v1"
+            self.client = OpenAI(api_key=api_key, base_url=base_url)
+        elif self.llm_provider == "ollama":
+            api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+            base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+            self.client = OpenAI(api_key=api_key, base_url=base_url)
+        elif self.llm_provider == "huggingface":
+            api_key = os.environ.get("HUGGINGFACE_API_KEY")
+            self.client = InferenceClient(token=api_key)
+        else: # default to kimi
+            api_key = os.environ.get("KIMI_API_KEY")
+            base_url = "https://api.moonshot.ai/v1"
+            self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def generate_response(self, prompt: str, system_prompt: str, model: str = None, json_mode: bool = False, max_tokens: int = None):
+        if model is None:
+            model = self.model
+
+        if self.llm_provider == "huggingface":
+            try:
+                response = self.client.chat_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=model,
+                    max_tokens=max_tokens,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                print(f"LLM API Error: {e}")
+                return "I apologize, but I'm having trouble processing your request right now due to high load. Please try again."
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -61,7 +72,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": 0.3,
-            "timeout": 30  # 30 second timeout
+            "timeout": 30
         }
         
         if json_mode:
@@ -127,7 +138,6 @@ class DatabaseService:
 
 
 # --- AI Agent Functions ---
-@app.function(retries=2)
 def generate_repository_blueprint(repo_path: str, file_list: list[str]):
     llm_service = LLMService()
     system_prompt_stage1 = "You are an expert software architect. Analyze the provided file structure and generate a concise, high-level overview of the repository's purpose and architecture. Do NOT guess the specific libraries used."
@@ -155,12 +165,10 @@ def generate_repository_blueprint(repo_path: str, file_list: list[str]):
     return final_blueprint
 
 
-@app.function(gpu="l4", volumes={"/root/.cache/huggingface": model_cache_volume}, timeout=120)
 def embed_chunks_batch(chunks: list[str]):
     """Optimized embedding with smaller batches"""
     from sentence_transformers import SentenceTransformer
-    model_cache_volume.reload()
-    model = SentenceTransformer('all-MiniLM-L6-v2', device='cuda')
+    model = SentenceTransformer('all-MiniLM-L6-v2', device='cuda' if torch.cuda.is_available() else 'cpu')
     
     # Process in smaller batches to avoid memory issues
     batch_size = 32
@@ -174,7 +182,6 @@ def embed_chunks_batch(chunks: list[str]):
     return all_embeddings
 
 
-@app.function(retries=2, timeout=30)
 def run_dispatcher(question: str) -> str:
     """Enhanced question classification including web search detection"""
     question_lower = question.lower()
@@ -218,7 +225,6 @@ Respond with only: summary, security, refactor, or web_search'''
         return "summary"
 
 
-@app.function(retries=2, timeout=90)
 def run_web_search_agent(question: str, context: str = ""):
     """🌐 NEW: Enhanced agent with Kimi web search for current information"""
     from openai import OpenAI
@@ -331,7 +337,6 @@ If it combines code context with external knowledge, integrate both seamlessly."
     return "Unable to complete web search after multiple attempts. Please try asking about specific code in the repository."
 
 
-@app.function(retries=2, timeout=45)
 def run_deep_thinker(question: str, context: str):
     """Optimized deep thinker with shorter responses"""
     llm_service = LLMService()
@@ -355,7 +360,6 @@ Be helpful and provide valuable insights based on what you can observe in the co
     return llm_service.generate_response(user_prompt, system_prompt, "moonshot-v1-8k", max_tokens=400)
 
 
-@app.function(retries=2, timeout=30)
 def run_security_guardian(context: str):
     llm_service = LLMService()
     system_prompt = """You are a senior security engineer. Analyze ONLY the provided code for vulnerabilities.
@@ -371,7 +375,6 @@ CRITICAL RULES:
     return llm_service.generate_response(user_prompt, system_prompt, "moonshot-v1-8k", max_tokens=350)
 
 
-@app.function(retries=2, timeout=30)
 def run_refactoring_agent(context: str):
     llm_service = LLMService()
     system_prompt = """You are a principal engineer specializing in code quality. Analyze ONLY the provided code snippets for potential improvements.
@@ -387,7 +390,6 @@ CRITICAL RULES:
     return llm_service.generate_response(user_prompt, system_prompt, "moonshot-v1-8k", max_tokens=350)
 
 
-@app.function(retries=2, timeout=20)
 def run_general_question_agent(question: str):
     """Handle general technical questions that don't require specific code context"""
     llm_service = LLMService()
@@ -404,7 +406,6 @@ GUIDELINES:
     return llm_service.generate_response(user_prompt, system_prompt, "moonshot-v1-8k", max_tokens=400)
 
 
-@app.function(retries=2, timeout=30)
 def generate_smart_questions_from_blueprint(blueprint: str, repo_id: int):
     """Generate project-specific smart questions based on the repository blueprint"""
     llm_service = LLMService()
@@ -447,7 +448,6 @@ Return ONLY a valid JSON array with this exact format:
         ]
 
 
-@app.function(retries=1, timeout=10)
 def generate_followup_questions_fast(original_question: str):
     """Generate follow-up questions with fast keyword-based approach"""
     question_lower = original_question.lower()
@@ -491,7 +491,6 @@ def generate_followup_questions_fast(original_question: str):
 
 
 # --- Ingestion Orchestrator ---
-@app.function(volumes={"/tmp/dev-agent": repo_volume}, timeout=1800)
 def ingest_repository(repo_url: str) -> dict:
     db_service = DatabaseService()
     clean_repo_url = repo_url.removesuffix('.git')
@@ -517,7 +516,7 @@ def ingest_repository(repo_url: str) -> dict:
         total_files = len(file_list)
         db_service.update_ingestion_progress(repo_id, "Generating blueprint...", 0, total_files)
         
-        blueprint_call = generate_repository_blueprint.spawn(extracted_path, file_list)
+        blueprint = generate_repository_blueprint(extracted_path, file_list)
         
         processed_files = 0
         for file_path in file_list:
@@ -527,8 +526,7 @@ def ingest_repository(repo_url: str) -> dict:
                     with open(full_path, 'r', encoding='utf-8', errors='ignore') as f: content = f.read()
                     chunks = [content[i:i+1000] for i in range(0, len(content), 1000)]
                     if chunks:
-                        embedding_call = embed_chunks_batch.spawn(chunks)
-                        embeddings = embedding_call.get()
+                        embeddings = embed_chunks_batch(chunks)
                         db_service.add_source_file_and_chunks(repo_id, file_path, chunks, embeddings)
                 except Exception as e:
                     print(f"Warning: Could not process file {file_path}: {e}")
@@ -536,7 +534,6 @@ def ingest_repository(repo_url: str) -> dict:
             db_service.update_ingestion_progress(repo_id, f"Processing file {processed_files}/{total_files}: {file_path}", processed_files, total_files)
         
         db_service.set_repository_status(repo_id, "completed")
-        blueprint = blueprint_call.get()
         
         # Store blueprint in database
         try:
@@ -574,21 +571,10 @@ def start_ingestion(request: IngestRequest):
     repo = db_service.get_repository_by_url(request.repo_url.removesuffix('.git'))
     if repo and repo['status'] == 'completed':
         return {"message": "Repository already processed.", "repo_id": repo['id']}
-    call = ingest_repository.spawn(request.repo_url)
-    return {"message": "Ingestion process started.", "call_id": call.object_id}
 
-
-@web_app.get("/get_ingestion_status")
-def get_ingestion_status(call_id: str):
-    from modal.functions import FunctionCall
-    function_call = FunctionCall.from_id(call_id)
-    try:
-        result = function_call.get(timeout=0)
-        return {"status": "completed", "repo_id": result.get("repo_id"), "blueprint": result.get("blueprint")}
-    except TimeoutError:
-        return {"status": "running"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    # For now, we'll run ingestion synchronously. This can be improved with background tasks.
+    result = ingest_repository(request.repo_url)
+    return result
 
 
 @web_app.post("/ask")
@@ -598,52 +584,40 @@ def ask(request: AskRequest):
     
     print(f"\n🔥 Processing question: {request.question[:100]}...")
     
-    # Parallel processing for speed
-    intent_call = run_dispatcher.spawn(request.question)
-    embedding_call = embed_chunks_batch.spawn([request.question])
+    intent_result = run_dispatcher(request.question)
+    query_embedding = embed_chunks_batch([request.question])[0]
     
-    # Get context while classification runs
-    query_embedding = embedding_call.get()[0]
     context_chunks = db_service.vector_search_chunks(query_embedding, request.repo_id, top_k=8)
-    
-    # Build context
     context = "\n\n".join([f"--- File: {chunk['file_path']} ---\n{chunk['chunk_text'][:400]}" for chunk in context_chunks[:5]]) if context_chunks else ""
     
-    intent_result = intent_call.get()
     print(f"🎯 Question classified as: {intent_result}")
     
-    # Enhanced routing with web search
     if intent_result == "web_search":
         print("🌐 Using web search agent")
-        answer_call = run_web_search_agent.spawn(request.question, context)
+        answer = run_web_search_agent(request.question, context)
     elif intent_result == "security":
         if context:
             print("🛡️ Using security guardian with context")
-            answer_call = run_security_guardian.spawn(context)
+            answer = run_security_guardian(context)
         else:
             print("🌐 Security question with no context - using web search")
-            answer_call = run_web_search_agent.spawn(request.question, "")
+            answer = run_web_search_agent(request.question, "")
     elif intent_result == "refactor":
         if context:
             print("🔧 Using refactoring agent with context")
-            answer_call = run_refactoring_agent.spawn(context)
+            answer = run_refactoring_agent(context)
         else:
             print("🌐 Refactoring question with no context - using web search")
-            answer_call = run_web_search_agent.spawn(request.question, "")
+            answer = run_web_search_agent(request.question, "")
     else:
-        # Default to appropriate agent
         if context:
             print("🧠 Using deep thinker with context")
-            answer_call = run_deep_thinker.spawn(request.question, context)
+            answer = run_deep_thinker(request.question, context)
         else:
             print("🌐 No context available - using web search")
-            answer_call = run_web_search_agent.spawn(request.question, "")
+            answer = run_web_search_agent(request.question, "")
     
-    # Generate follow-ups
-    followup_call = generate_followup_questions_fast.spawn(request.question)
-    
-    answer = answer_call.get()
-    followup_questions = followup_call.get()
+    followup_questions = generate_followup_questions_fast(request.question)
     
     print(f"✅ Response generated: {len(answer)} characters")
     
@@ -684,8 +658,7 @@ def get_smart_questions(repo_id: int):
         
         # Generate smart questions based on blueprint
         try:
-            questions_call = generate_smart_questions_from_blueprint.spawn(blueprint, repo_id)
-            questions = questions_call.get()
+            questions = generate_smart_questions_from_blueprint(blueprint, repo_id)
             return {"questions": questions}
         except Exception as e:
             print(f"Error generating smart questions: {e}")
@@ -730,14 +703,12 @@ def prefetch_answers(request: PrefetchRequest):
         # Generate embeddings
         print(f"\n📊 Step 1: Generating embeddings...")
         embedding_start = time.time()
-        all_embeddings_call = embed_chunks_batch.spawn(questions)
-        all_embeddings = all_embeddings_call.get()
+        all_embeddings = embed_chunks_batch(questions)
         embedding_time = time.time() - embedding_start
         print(f"   ✅ Embeddings generated in {embedding_time:.1f}s")
         
         # Process each question
         print(f"\n📊 Step 2: Processing questions with context...")
-        answer_calls = []
         
         for i, question in enumerate(questions):
             try:
@@ -756,9 +727,13 @@ def prefetch_answers(request: PrefetchRequest):
                     ])
                     print(f"     📄 Context length: {len(context)} chars")
                     
-                    answer_call = run_deep_thinker.spawn(question, context)
-                    answer_calls.append((question, answer_call, True))
-                    print(f"     🚀 LLM call queued")
+                    answer = run_deep_thinker(question, context)
+                    results[question] = {
+                        "answer": answer,
+                        "followup_questions": generate_followup_questions_fast(question),
+                        "intent": "summary"
+                    }
+                    print(f"     🚀 LLM call complete")
                 else:
                     print(f"     ❌ No context chunks found")
                     results[question] = {
@@ -775,74 +750,12 @@ def prefetch_answers(request: PrefetchRequest):
                     "intent": "error"
                 }
         
-        # Collect results
-        print(f"\n📊 Step 3: Collecting {len(answer_calls)} LLM results...")
-        collection_start = time.time()
-        
-        for i, (question, answer_call, has_context) in enumerate(answer_calls):
-            try:
-                print(f"\n   Collecting Q{i+1}: '{question[:50]}...'")
-                result_start = time.time()
-                
-                answer = answer_call.get(timeout=25)
-                result_time = time.time() - result_start
-                
-                print(f"     ✅ Got answer in {result_time:.1f}s ({len(answer)} chars)")
-                
-                # Generate followups based on question type
-                followup_questions = []
-                question_lower = question.lower()
-                if "purpose" in question_lower or "main" in question_lower:
-                    followup_questions = ["How is this implemented?", "What are the key components?"]
-                elif "security" in question_lower:
-                    followup_questions = ["How can these be fixed?", "What are best practices?"]
-                elif "architecture" in question_lower:
-                    followup_questions = ["What design patterns are used?", "How do components interact?"]
-                elif "implement" in question_lower:
-                    followup_questions = ["What are the main design patterns?", "How do components interact?", "Are there any limitations?"]
-                elif "improve" in question_lower or "optimize" in question_lower:
-                    followup_questions = ["What would be the impact?", "Are there trade-offs?"]
-                else:
-                    followup_questions = ["Tell me more", "How does this work?"]
-                
-                # Store result with debug info
-                results[question] = {
-                    "answer": answer,
-                    "followup_questions": followup_questions,
-                    "intent": "summary"
-                }
-                
-                print(f"     📝 Stored answer with {len(followup_questions)} followups")
-                
-            except Exception as e:
-                print(f"     ⏰ Timeout/Error for Q{i+1}: {e}")
-                results[question] = {
-                    "answer": f"Request timed out or failed: {str(e)[:50]}. Please try asking this individually.",
-                    "followup_questions": ["Try this question again", "Ask about specific components"],
-                    "intent": "error"
-                }
-        
-        collection_time = time.time() - collection_start
         total_time = time.time() - start_time
         
         print(f"\n🎉 PREFETCH COMPLETE:")
         print(f"   Total time: {total_time:.1f}s")
-        print(f"   Embedding time: {embedding_time:.1f}s")
-        print(f"   Collection time: {collection_time:.1f}s")
         print(f"   Results: {len(results)} answers")
         
-        # Debug: Show final results structure
-        print(f"\n📊 FINAL RESULTS TO CACHE:")
-        for i, (key, value) in enumerate(results.items()):
-            answer_preview = value.get('answer', '')[:80] + '...' if len(value.get('answer', '')) > 80 else value.get('answer', 'No answer')
-            followup_count = len(value.get('followup_questions', []))
-            print(f"   Result {i+1}:")
-            print(f"     Key: '{key}'")
-            print(f"     Answer: {answer_preview}")
-            print(f"     Followups: {followup_count}")
-            print(f"     Intent: {value.get('intent', 'unknown')}")
-        
-        print(f"\n📤 RETURNING: {{'answers': {len(results)} results}}")
         return {"answers": results}
         
     except Exception as e:
@@ -858,7 +771,6 @@ def prefetch_answers(request: PrefetchRequest):
                 "intent": "error"
             }
         
-        print(f"📤 RETURNING ERROR RESULTS: {len(error_results)} entries")
         return {"answers": error_results}
 
 
@@ -867,15 +779,14 @@ def get_available_functions(repo_id: int):
     """Get all available functions/methods from the codebase - optimized"""
     db_service = DatabaseService()
     
-    # Search for function definitions in the code with timeout
     function_patterns = [
-        "def ", "function ", "class ", "const ", "@app.function"
+        "def ", "function ", "class ", "const "
     ]
     
     functions = []
     try:
         with db_service.get_connection() as conn:
-            for pattern in function_patterns[:3]:  # Limit patterns for speed
+            for pattern in function_patterns[:3]:
                 stmt = text("""
                     SELECT DISTINCT c.chunk_text, sf.file_path 
                     FROM code_chunks c 
@@ -886,12 +797,11 @@ def get_available_functions(repo_id: int):
                 results = conn.execute(stmt, {"repo_id": repo_id, "pattern": f"%{pattern}%"}).mappings().all()
                 
                 for result in results:
-                    # Extract function names (simplified)
                     lines = result['chunk_text'].split('\n')
-                    for line in lines[:5]:  # Only check first 5 lines
+                    for line in lines[:5]:
                         if pattern in line and ('(' in line or '{' in line):
                             functions.append({
-                                "signature": line.strip()[:80],  # Truncate for speed
+                                "signature": line.strip()[:80],
                                 "file_path": result['file_path'],
                                 "type": "function" if "def " in line or "function " in line else "other"
                             })
@@ -899,7 +809,7 @@ def get_available_functions(repo_id: int):
     except Exception as e:
         print(f"Error getting functions: {e}")
     
-    return {"functions": functions[:30]}  # Limit to 30 functions
+    return {"functions": functions[:30]}
 
 
 @web_app.get("/health")
@@ -908,14 +818,11 @@ def health_check():
     return {
         "status": "healthy",
         "timestamp": time.time(),
-        "gpu_available": True,
+        "gpu_available": False, # Update this based on actual GPU detection
         "web_search_enabled": True,
-        "message": "System operational with Kimi web search"
+        "message": "System operational"
     }
 
 
-# --- Deploy the FastAPI app ---
-@app.function()
-@modal.asgi_app()
-def api():
-    return web_app
+if __name__ == "__main__":
+    uvicorn.run(web_app, host="0.0.0.0", port=8000)

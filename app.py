@@ -10,7 +10,7 @@ import time
 
 st.set_page_config(page_title="DevAgent", layout="wide", page_icon="🕵️")
 
-MODAL_BASE_URL = os.environ.get("MODAL_WEB_URL", "https://pratikcreates--dev-agent-p-api.modal.run")
+BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
 CACHE_DIR = Path(".cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -235,33 +235,28 @@ def load_from_cache(repo_id, cache_type):
 
 # API Functions with timeout handling
 def start_ingestion(repo_url):
-    resp = requests.post(f"{MODAL_BASE_URL}/start_ingestion", json={"repo_url": repo_url}, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-def get_ingestion_status(call_id):
-    resp = requests.get(f"{MODAL_BASE_URL}/get_ingestion_status?call_id={call_id}", timeout=30)
+    resp = requests.post(f"{BACKEND_BASE_URL}/start_ingestion", json={"repo_url": repo_url}, timeout=1800) # Increased timeout for sync ingestion
     resp.raise_for_status()
     return resp.json()
 
 def get_smart_questions(repo_id):
-    resp = requests.get(f"{MODAL_BASE_URL}/get_smart_questions?repo_id={repo_id}", timeout=30)
+    resp = requests.get(f"{BACKEND_BASE_URL}/get_smart_questions?repo_id={repo_id}", timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 def get_available_functions(repo_id):
-    resp = requests.get(f"{MODAL_BASE_URL}/get_available_functions?repo_id={repo_id}", timeout=30)
+    resp = requests.get(f"{BACKEND_BASE_URL}/get_available_functions?repo_id={repo_id}", timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 def prefetch_answers(repo_id, questions):
-    resp = requests.post(f"{MODAL_BASE_URL}/prefetch_answers", json={"repo_id": repo_id, "questions": questions}, timeout=300)  # Increased timeout
+    resp = requests.post(f"{BACKEND_BASE_URL}/prefetch_answers", json={"repo_id": repo_id, "questions": questions}, timeout=300)
     resp.raise_for_status()
     return resp.json()
 
 def ask_question(repo_id, question):
     try:
-        resp = requests.post(f"{MODAL_BASE_URL}/ask", json={"repo_id": repo_id, "question": question}, timeout=120)
+        resp = requests.post(f"{BACKEND_BASE_URL}/ask", json={"repo_id": repo_id, "question": question}, timeout=120)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.Timeout:
@@ -576,48 +571,25 @@ def find_cached_answer(question, prefetched_answers):
     
     return None, "no_match"
 
-def handle_background_ingestion():
+def handle_ingestion():
     """Handle repository ingestion process"""
-    if "ingestion_status" not in st.session_state:
+    if "ingestion_status" not in st.session_state or st.session_state.ingestion_status != "starting":
         return
         
-    status = st.session_state.ingestion_status
-    
-    if status == "starting":
-        try:
-            data = start_ingestion(st.session_state.repo_url)
-            if data.get("repo_id"):
-                st.session_state.repo_id = data.get("repo_id")
-                st.session_state.blueprint = data.get("blueprint", "")
-                st.session_state.ingestion_status = "completed"
-                st.rerun()
-            else:
-                st.session_state.call_id = data.get("call_id")
-                st.session_state.ingestion_status = "processing"
-                st.rerun()
-        except Exception as e:
+    try:
+        data = start_ingestion(st.session_state.repo_url)
+        if data.get("repo_id"):
+            st.session_state.repo_id = data.get("repo_id")
+            st.session_state.blueprint = data.get("blueprint", "")
+            st.session_state.ingestion_status = "completed"
+        else:
             st.session_state.ingestion_status = "error"
-            st.session_state.ingestion_error = str(e)
-            st.rerun()
-            
-    elif status == "processing" and st.session_state.get("call_id"):
-        try:
-            progress = get_ingestion_status(st.session_state.call_id)
-            stt = progress.get("status")
-            
-            if stt == "completed":
-                st.session_state.repo_id = progress.get("repo_id")
-                st.session_state.blueprint = progress.get("blueprint", "")
-                st.session_state.ingestion_status = "completed"
-                st.rerun()
-            elif stt == "error":
-                st.session_state.ingestion_status = "error"
-                st.session_state.ingestion_error = progress.get("message", "Unknown error")
-                st.rerun()
-        except Exception as e:
-            st.session_state.ingestion_status = "error"
-            st.session_state.ingestion_error = str(e)
-            st.rerun()
+            st.session_state.ingestion_error = data.get("blueprint", "Unknown ingestion error")
+    except Exception as e:
+        st.session_state.ingestion_status = "error"
+        st.session_state.ingestion_error = str(e)
+
+    st.rerun()
 
 def render_sidebar():
     """Render the sidebar with controls"""
@@ -994,7 +966,7 @@ def ChatScreen():
             st.session_state[key] = default
     
     render_sidebar()
-    handle_background_ingestion()
+    handle_ingestion()
     
     # Handle prefetch pipeline after ingestion completes
     if (st.session_state.get("ingestion_status") == "completed" and 
@@ -1020,7 +992,7 @@ def ChatScreen():
         status = st.session_state.get("ingestion_status", "starting")
         prefetch_status = st.session_state.get("prefetch_status", "pending")
         
-        if status in ("starting", "processing"):
+        if status == "starting":
             st.markdown('<div class="status-indicator status-loading">⚡ Processing Repository</div>', unsafe_allow_html=True)
         elif status == "completed" and prefetch_status == "pending":
             st.markdown('<div class="status-indicator status-loading">⏳ Ready for Analysis</div>', unsafe_allow_html=True)
