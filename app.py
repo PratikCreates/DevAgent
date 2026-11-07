@@ -623,7 +623,7 @@ def render_sidebar():
     """Render the sidebar with controls"""
     with st.sidebar:
         st.markdown('<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">', unsafe_allow_html=True)
-        st.markdown('<div><h3 style="margin:0">🕵️ DevAgent</h3><div class="small-muted">Decompose public GitHub repos</div></div>', unsafe_allow_html=True)
+        st.markdown('<div><h3 style="margin:0">🕵️ DevAgent</h3><div class="small-muted">Demystify public GitHub repos</div></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
         # Repository Analysis Section
@@ -965,7 +965,7 @@ def process_question(question_text):
 
 def WelcomeScreen():
     """Render the welcome screen"""
-    st.markdown('<div class="main-header"><h1 style="margin:0">🕵️ DevAgent</h1><div style="margin-top:6px;color:#bfc7cf">Decompose any public GitHub repository with AI</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header"><h1 style="margin:0">🕵️ DevAgent</h1><div style="margin-top:6px;color:#bfc7cf">Demystify any public GitHub repository with AI</div></div>', unsafe_allow_html=True)
     
     render_sidebar()
     render_docs_main_screen()

@@ -1,4 +1,4 @@
-# 🕵️ DevAgent - Demystify your codebase
+# 🕵️ DevAgent -   
 **Built for TiDB AgentX Hackathon 2025: Forge Agentic AI for Real-World Impact**
 
 DevAgent transforms any GitHub repository into an interactive AI assistant. Instead of navigating thousands of files, simply provide a repository URL and start asking questions about code architecture, security vulnerabilities, deployment strategies, and implementation details.
@@ -9,7 +9,7 @@ DevAgent combines TiDB's distributed vector database for lightning-fast semantic
 
 ## Prerequisites
 - **TiDB Account** – free tier available at [tidbcloud.com](https://tidbcloud.com)  
-- **Kimi API Key** – get yours at [moonshot.cn](https://moonshot.cn)  
+- **Kimi API Key** – get yours at [moonshot.cn](https://moonshot.ai)  
 - **Modal Account** – serverless compute at [modal.com](https://modal.com)  
 
 ## Installation & Deployment
